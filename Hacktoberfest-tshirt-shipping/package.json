@@ -1,0 +1,359 @@
+# Project: hacktoberfest-tshirt-shipping
+
+This single-file package contains a full, minimal, but complete website + backend project to collect shipping addresses for Hacktoberfest T-shirt giveaways and manage shipments worldwide. Files are separated by headers. Copy each section into the respective file when you run the project.
+
+---
+
+// FILE: README.md
+# Hacktoberfest T‑Shirt Shipping (Minimal Fullstack)
+
+A simple fullstack project (Node.js + Express + SQLite + static frontend) to collect recipient data, calculate a simple shipping estimate, and create shipment records for sending Hacktoberfest T-shirts worldwide.
+
+## Features
+- Frontend single-page form to register recipients and request shipments
+- Backend REST API to store recipients and shipments in SQLite
+- Basic country detection + mock shipping cost calculation
+- Optional email notifications (via SMTP) after shipment creation
+- Dockerfile included
+
+## Requirements
+- Node.js 18+ (or compatible)
+- npm
+
+## Quick start
+1. Copy files into a project folder.
+2. `npm install`
+3. Create an `.env` from `.env.example` and fill in SMTP settings if you want emails.
+4. `npm run init-db` to create the sqlite database and sample tables.
+5. `npm start`
+6. Open `http://localhost:3000` and test.
+
+---
+
+// FILE: package.json
+{
+  "name": "hacktoberfest-tshirt-shipping",
+  "version": "1.0.0",
+  "description": "Minimal fullstack app to collect shipping addresses and manage t-shirt shipments",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "init-db": "node db_init.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "sqlite3": "^5.1.6",
+    "dotenv": "^16.0.3",
+    "nodemailer": "^6.9.4"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
+
+---
+
+// FILE: .env.example
+# Server port
+PORT=3000
+
+# SMTP (optional) — fill to enable email notifications
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=you@example.com
+SMTP_PASS=supersecret
+FROM_NAME="Hacktoberfest Team"
+FROM_EMAIL=no-reply@example.com
+
+# App settings
+ADMIN_EMAIL=admin@example.com
+
+---
+
+// FILE: db_init.js
+const sqlite3 = require('sqlite3');
+const db = new sqlite3.Database('./data.db');
+
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS recipients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT,
+    address TEXT NOT NULL,
+    city TEXT,
+    postal_code TEXT,
+    country TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS shipments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recipient_id INTEGER NOT NULL,
+    carrier TEXT,
+    tracking_number TEXT,
+    cost_cents INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'pending',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (recipient_id) REFERENCES recipients(id)
+  );`);
+
+  console.log('Database initialized (data.db)');
+  db.close();
+});
+
+---
+
+// FILE: server.js
+const express = require('express');
+const path = require('path');
+const sqlite3 = require('sqlite3');
+const cors = require('cors');
+const dotenv = require('dotenv');
+const nodemailer = require('nodemailer');
+
+dotenv.config();
+const app = express();
+const PORT = process.env.PORT || 3000;
+const db = new sqlite3.Database('./data.db');
+
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
+
+// util: mock shipping cost (simple)
+function estimateShippingCents(countryCode, weightGrams = 300) {
+  // base cost: domestic cheap, international more
+  const dest = (countryCode || '').toUpperCase();
+  let base;
+  if (!dest || dest === 'ID' || dest === 'US' || dest === 'GB') base = 8000; // cheap defaults (in cents, meaning IDR/other unit not enforced)
+  else base = 15000;
+  // weight multiplier
+  const weightFactor = Math.max(1, Math.ceil(weightGrams / 250));
+  return base * weightFactor;
+}
+
+// Optional email transporter if env set
+let transporter = null;
+if (process.env.SMTP_HOST) {
+  transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: parseInt(process.env.SMTP_PORT || '587'),
+    secure: false,
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
+    },
+  });
+}
+
+// API: register recipient
+app.post('/api/recipients', (req, res) => {
+  const { name, email, address, city, postal_code, country } = req.body;
+  if (!name || !address || !country) return res.status(400).json({ error: 'name, address, and country required' });
+
+  const stmt = db.prepare(`INSERT INTO recipients (name, email, address, city, postal_code, country) VALUES (?, ?, ?, ?, ?, ?)`);
+  stmt.run(name, email || null, address, city || null, postal_code || null, country, function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ id: this.lastID });
+  });
+});
+
+// API: list recipients (basic)
+app.get('/api/recipients', (req, res) => {
+  db.all(`SELECT * FROM recipients ORDER BY created_at DESC LIMIT 200`, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
+
+// API: create shipment for a recipient
+app.post('/api/shipments', (req, res) => {
+  const { recipient_id, weight_grams } = req.body;
+  if (!recipient_id) return res.status(400).json({ error: 'recipient_id required' });
+
+  db.get(`SELECT * FROM recipients WHERE id = ?`, [recipient_id], (err, recipient) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!recipient) return res.status(404).json({ error: 'recipient not found' });
+
+    const cost = estimateShippingCents(recipient.country, weight_grams || 300);
+    const carrier = 'MockPost';
+    const tracking = 'HP' + Date.now().toString().slice(-8);
+
+    const stmt = db.prepare(`INSERT INTO shipments (recipient_id, carrier, tracking_number, cost_cents, status) VALUES (?, ?, ?, ?, ?)`);
+    stmt.run(recipient_id, carrier, tracking, cost, 'created', function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+
+      const shipmentId = this.lastID;
+
+      // Optional email notification
+      if (transporter && recipient.email) {
+        transporter.sendMail({
+          from: `${process.env.FROM_NAME || 'Hacktoberfest'} <${process.env.FROM_EMAIL || process.env.SMTP_USER}>`,
+          to: recipient.email,
+          subject: 'Your Hacktoberfest T-shirt shipment',
+          text: `Hi ${recipient.name},\n\nYour t-shirt shipment has been created. Tracking: ${tracking}.\nEstimated cost (internal): ${cost} cents.\n\nThanks!`,
+        }).catch(e => console.error('Email error', e.message));
+      }
+
+      res.json({ id: shipmentId, tracking, cost_cents: cost, carrier });
+    });
+  });
+});
+
+// API: list shipments
+app.get('/api/shipments', (req, res) => {
+  db.all(`SELECT s.*, r.name as recipient_name, r.country as recipient_country FROM shipments s JOIN recipients r ON r.id = s.recipient_id ORDER BY s.created_at DESC LIMIT 200`, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
+
+// fallback to frontend
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+app.listen(PORT, () => {
+  console.log(`Server started on port ${PORT}`);
+});
+
+---
+
+// FILE: public/index.html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hacktoberfest T‑Shirt Shipping</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Hacktoberfest — T‑Shirt Shipping</h1>
+
+    <section class="card">
+      <h2>Register recipient</h2>
+      <form id="recipient-form">
+        <input name="name" placeholder="Full name" required />
+        <input name="email" placeholder="Email (optional)" />
+        <input name="address" placeholder="Address line" required />
+        <input name="city" placeholder="City" />
+        <input name="postal_code" placeholder="Postal code" />
+        <input name="country" placeholder="Country (ISO code e.g. US, ID)" required />
+        <button type="submit">Save recipient</button>
+      </form>
+      <div id="recipient-result" class="result"></div>
+    </section>
+
+    <section class="card">
+      <h2>Create shipment</h2>
+      <form id="shipment-form">
+        <select id="recipient-select"></select>
+        <input name="weight_grams" placeholder="Weight in grams (300)" />
+        <button type="submit">Create shipment</button>
+      </form>
+      <div id="shipment-result" class="result"></div>
+    </section>
+
+    <section class="card">
+      <h2>Recent shipments</h2>
+      <div id="shipments-list"></div>
+    </section>
+
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
+
+---
+
+// FILE: public/styles.css
+:root{font-family:system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial}
+body{background:#f6f8fa;margin:0;padding:20px;color:#111}
+.container{max-width:900px;margin:0 auto}
+.card{background:#fff;padding:16px;border-radius:10px;box-shadow:0 6px 18px rgba(20,20,40,0.06);margin-bottom:16px}
+input,select,button{display:block;width:100%;padding:10px;margin:8px 0;border-radius:6px;border:1px solid #ddd}
+button{cursor:pointer}
+.result{margin-top:8px;color:#0b5}
+
+---
+
+// FILE: public/app.js
+async function api(path, opts={}){
+  const res = await fetch('/api' + path, opts);
+  return res.json();
+}
+
+async function loadRecipients(){
+  const list = document.getElementById('recipient-select');
+  list.innerHTML = '<option value="">Loading...</option>';
+  const recipients = await api('/recipients');
+  list.innerHTML = '<option value="">— choose recipient —</option>' + recipients.map(r => `<option value="${r.id}">${r.name} — ${r.country}</option>`).join('');
+}
+
+async function loadShipments(){
+  const el = document.getElementById('shipments-list');
+  el.innerHTML = 'Loading...';
+  const items = await api('/shipments');
+  if (!items || items.length === 0) { el.innerHTML = '<i>No shipments yet</i>'; return; }
+  el.innerHTML = '<ul>' + items.map(s => `<li>#${s.id} ${s.recipient_name} (${s.recipient_country}) — ${s.carrier} ${s.tracking_number} — ${s.cost_cents} — ${s.status}</li>`).join('') + '</ul>';
+}
+
+document.getElementById('recipient-form').addEventListener('submit', async (e) =>{
+  e.preventDefault();
+  const form = e.target;
+  const data = Object.fromEntries(new FormData(form).entries());
+  const res = await api('/recipients', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
+  if (res.id) {
+    document.getElementById('recipient-result').innerText = 'Saved recipient id=' + res.id;
+    form.reset();
+    await loadRecipients();
+  } else {
+    document.getElementById('recipient-result').innerText = 'Error: ' + (res.error || 'unknown');
+  }
+});
+
+document.getElementById('shipment-form').addEventListener('submit', async (e) =>{
+  e.preventDefault();
+  const form = e.target;
+  const recipient_id = document.getElementById('recipient-select').value;
+  const weight_grams = form.weight_grams.value || 300;
+  const res = await api('/shipments', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ recipient_id, weight_grams }) });
+  if (res.id) {
+    document.getElementById('shipment-result').innerText = `Shipment created id=${res.id} tracking=${res.tracking}`;
+    form.reset();
+    await loadShipments();
+  } else {
+    document.getElementById('shipment-result').innerText = 'Error: ' + (res.error || 'unknown');
+  }
+});
+
+// initial
+loadRecipients();
+loadShipments();
+
+---
+
+// FILE: Dockerfile
+FROM node:18-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+EXPOSE 3000
+CMD ["node","server.js"]
+
+---
+
+// FILE: Notes.txt
+- This implementation is intentionally minimal and uses a mock shipping calculation. For production shipping you should integrate with real carriers (DHL, UPS, USPS, etc.) and compute rates via their APIs.
+- Be careful with customs rules and restricted items. T-shirts are usually fine but check local laws.
+- If you will ship worldwide at scale, consider a 3PL (third-party logistics) partner and an address validation service.
+
+---
+
+End of project file bundle.
