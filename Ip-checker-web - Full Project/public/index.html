@@ -1,0 +1,37 @@
+// FILE: public/index.html
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>IP Checker</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<main class="container">
+<h1>IP Checker</h1>
+<section class="card">
+<h2>Your IP</h2>
+<button id="btn-me">Tampilkan IP saya</button>
+<pre id="me-result"></pre>
+</section>
+
+
+<section class="card">
+<h2>Lookup IP</h2>
+<form id="lookup-form">
+<input name="ip" placeholder="Masukkan alamat IP (contoh: 8.8.8.8)" required />
+<button type="submit">Cek</button>
+</form>
+<pre id="lookup-result"></pre>
+</section>
+
+
+<section class="card">
+<h2>Catatan</h2>
+<p>Fitur geolocation bersifat opsional — atur <code>GEO_PROVIDER</code> di file <code>.env</code> untuk menggunakan <code>ip-api</code> (default, tanpa kunci) atau <code>ipinfo</code> (membutuhkan token di <code>IPINFO_TOKEN</code>).</p>
+</section>
+</main>
+<script src="/app.js"></script>
+</body>
+</html>
